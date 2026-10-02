@@ -1,0 +1,12 @@
+[project]
+name = "en-passant"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ludihan", email = "65617704+ludihan@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "reflex>=0.9.12",
+]
