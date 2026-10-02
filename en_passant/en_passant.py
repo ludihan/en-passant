@@ -67,12 +67,11 @@ def index() -> rx.Component:
         rx.box(
             rx.el.h2("About", id="about"),
             rx.el.p(
-                "En Passant is a chess server written entirely in Python with Reflex. "
-                "Game state, rules and the computer opponent all run on the server, "
-                "and the browser stays in sync over a websocket."
+                "En Passant is a free chess server. Game state, rules and the computer "
+                "opponent all run on the server, and the browser stays in sync "
+                "over a websocket."
             ),
             rx.el.ul(
-                rx.el.li("Rules and move generation: python-chess."),
                 rx.el.li(
                     "Computer opponent: a negamax search with alpha-beta pruning, "
                     "quiescence search, iterative deepening and capture-first move "
@@ -89,7 +88,7 @@ def index() -> rx.Component:
             ),
             class_name="about",
         ),
-        rx.box("En Passant · built with Python and Reflex", class_name="footer"),
+        rx.box("En Passant", class_name="footer"),
     )
 
 
