@@ -6,7 +6,7 @@ from typing import Any
 import chess
 import reflex as rx
 
-from . import engine
+from . import engine, rooms
 
 # Solid glyphs for both colours; CSS paints them white or black.
 GLYPH = {
@@ -42,6 +42,13 @@ class State(rx.State):
     gen: int = 0  # bumped whenever the game is reset/rewound; invalidates in-flight AI moves
     toast: str = ""
 
+    # --- online ---
+    room: str = ""  # room code; empty when playing locally
+    my_color: str = ""  # "white" | "black" | "" (spectator)
+    opp_label: str = "Opponent"
+    room_version: int = -1
+    watch_gen: int = 0
+
     _board: chess.Board = chess.Board()
 
     # ---------- settings ----------
@@ -60,13 +67,20 @@ class State(rx.State):
     # ---------- helpers ----------
     @property
     def _human_color(self) -> bool | None:
+        if self.room:
+            return self.my_color == "white"
         if self.mode != "ai":
             return None
         return self.side != "black"
 
+    @property
+    def _player_id(self) -> str:
+        return self.router.session.client_token
+
     def _ai_turn(self) -> bool:
         return (
-            self.mode == "ai"
+            not self.room
+            and self.mode == "ai"
             and not self.over
             and self._board.turn != self._human_color
         )
@@ -92,6 +106,11 @@ class State(rx.State):
             self.status = f"{who} to move{check}"
 
     def _push(self, move: chess.Move):
+        if self.room:
+            room = rooms.get(self.room)
+            if room and rooms.play(room, self._player_id, move):
+                self._load(room)
+            return
         self.san_list = [*self.san_list, self._board.san(move)]
         self._board.push(move)
         self.last_move = [move.from_square, move.to_square]
@@ -101,6 +120,7 @@ class State(rx.State):
     @rx.event
     def new_game(self):
         self.gen += 1
+        self.room, self.my_color, self.room_version = "", "", -1
         self._board = chess.Board()
         self.san_list, self.last_move = [], []
         self.thinking = False
@@ -117,7 +137,9 @@ class State(rx.State):
         if self.over or self.thinking or self.promo_from != -1:
             return
         board = self._board
-        if self.mode == "ai" and board.turn != self._human_color:
+        if self.room and (not self.my_color or board.turn != self._human_color):
+            return
+        if not self.room and self.mode == "ai" and board.turn != self._human_color:
             return
 
         if self.selected != -1 and idx in self.targets:
@@ -169,7 +191,7 @@ class State(rx.State):
     @rx.event
     def undo(self):
         board = self._board
-        if not board.move_stack or self.thinking:
+        if self.room or not board.move_stack or self.thinking:
             return
         self.gen += 1
         board.pop()
@@ -189,6 +211,12 @@ class State(rx.State):
     @rx.event
     def resign(self):
         if self.over:
+            return
+        if self.room:
+            room = rooms.get(self.room)
+            if room:
+                rooms.resign(room, self._player_id)
+                self._load(room)
             return
         self.gen += 1
         self.thinking = False
@@ -217,6 +245,76 @@ class State(rx.State):
         await asyncio.sleep(1.8)
         async with self:
             self.toast = ""
+
+    # ---------- online ----------
+    def _load(self, room: rooms.Room):
+        """Copy the room's authoritative state into this client's state."""
+        self._board = room.board.copy()
+        self.fen = room.board.fen()
+        self.san_list = list(room.san_list)
+        self.last_move = list(room.last_move)
+        self.status = room.status
+        self.over = room.over
+        self.thinking = room.bot_thinking
+        self.opp_label = room.opponent_label(self.my_color or "white")
+        self.room_version = room.version
+        self.selected, self.targets = -1, []
+        self.promo_from = self.promo_to = -1
+
+    def _open_room(self, room: rooms.Room):
+        return rx.redirect(f"/game/{room.code}")
+
+    @rx.event
+    def quick_match(self):
+        return self._open_room(rooms.quick_match(self._player_id))
+
+    @rx.event
+    def invite_friend(self):
+        return self._open_room(rooms.create(self._player_id, self.side))
+
+    @rx.event
+    def online_vs_bot(self):
+        return self._open_room(rooms.create(self._player_id, self.side, bot_level=self.level))
+
+    @rx.event
+    def enter_room(self):
+        code = self.router.page.params.get("code", "")
+        room = rooms.get(code)
+        if room is None:
+            self.room = ""
+            return [rx.toast.error("That game doesn't exist or has expired."), rx.redirect("/play")]
+        self.gen += 1
+        self.room = code
+        self.my_color = rooms.join(room, self._player_id)
+        self.flipped = self.my_color == "black"
+        self.watch_gen += 1
+        self._load(room)
+        return State.watch_room(self.watch_gen)
+
+    @rx.event(background=True)
+    async def watch_room(self, token: int):
+        """Poll the room, mirror changes into this client and run the bot's moves."""
+        while True:
+            try:
+                async with self:
+                    if self.watch_gen != token or not self.room:
+                        return
+                    room = rooms.get(self.room)
+                    if room is None:
+                        return
+                    rooms.tick(room)
+                    if room.version != self.room_version:
+                        self._load(room)
+                    level = room.bot_level
+                fen_before = room.board.fen()
+                board = rooms.claim_bot_turn(room)
+                if board is not None:
+                    move = await asyncio.to_thread(engine.best_move, board, level)
+                    await asyncio.sleep(0.4)
+                    rooms.finish_bot_turn(room, move, fen_before)
+            except Exception:  # client went away
+                return
+            await asyncio.sleep(0.35)
 
     # ---------- computed ----------
     @rx.var
@@ -282,23 +380,26 @@ class State(rx.State):
         m = self.material
         return "0.0" if m == 0 else f"{m:+d}"
 
-    @rx.var
-    def top_is_white(self) -> bool:
-        return self.flipped
+    def _name(self, white: bool) -> str:
+        if self.room:
+            if not self.my_color:
+                return "White" if white else "Black"
+            return "You" if white == (self.my_color == "white") else self.opp_label
+        if self.mode == "ai":
+            return "You" if white == (self.side == "white") else f"Bot · {LEVEL_NAMES[self.level]}"
+        return "White" if white else "Black"
 
     @rx.var
     def top_name(self) -> str:
-        top_white = self.flipped
-        if self.mode == "ai" and (self.side == "white") != top_white:
-            return f"Bot · {LEVEL_NAMES[self.level]}"
-        return "White" if top_white else "Black"
+        return self._name(self.flipped)
 
     @rx.var
     def bottom_name(self) -> str:
-        bottom_white = not self.flipped
-        if self.mode == "ai" and (self.side == "white") == bottom_white:
-            return "You"
-        return "White" if bottom_white else "Black"
+        return self._name(not self.flipped)
+
+    @rx.var
+    def waiting(self) -> bool:
+        return bool(self.room) and self.status.startswith("Waiting")
 
     @rx.var
     def top_taken(self) -> str:

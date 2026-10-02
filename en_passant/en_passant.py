@@ -214,39 +214,106 @@ def move_row(row) -> rx.Component:
     )
 
 
+def online_panel() -> rx.Component:
+    return rx.box(
+        rx.el.h4("Play online"),
+        rx.el.button(
+            "\u26a1  Quick match",
+            class_name="btn btn-primary",
+            on_click=State.quick_match,
+            style={"width": "100%", "marginBottom": "10px"},
+        ),
+        rx.box(
+            rx.el.button("Invite a friend", class_name="btn", on_click=State.invite_friend),
+            rx.el.button("Online vs bot", class_name="btn", on_click=State.online_vs_bot),
+            class_name="btn-grid",
+        ),
+        rx.text(
+            "Quick match pairs you with a real player, or a bot if nobody shows up. "
+            "Colour and bot level follow the settings above.",
+            class_name="empty",
+            style={"marginTop": "12px"},
+        ),
+        class_name="panel",
+    )
+
+
+def room_panel() -> rx.Component:
+    return rx.box(
+        rx.el.h4("Online game"),
+        rx.cond(
+            State.my_color != "",
+            rx.text(
+                "You are playing ",
+                rx.el.b(State.my_color),
+                " · ",
+                rx.el.span(State.room, class_name="mono"),
+                class_name="empty",
+                style={"marginBottom": "12px"},
+            ),
+            rx.text("You are spectating this game.", class_name="empty"),
+        ),
+        rx.cond(
+            State.waiting,
+            rx.text(
+                "Send this link to a friend to start the game:",
+                class_name="empty",
+                style={"marginBottom": "10px"},
+            ),
+        ),
+        rx.box(
+            rx.el.button(
+                "Copy invite link",
+                class_name="btn",
+                on_click=rx.call_script("navigator.clipboard.writeText(window.location.href)"),
+            ),
+            rx.link("Leave", href="/play", class_name="btn"),
+            class_name="btn-grid",
+        ),
+        class_name="panel",
+    )
+
+
 def side_panel() -> rx.Component:
     return rx.box(
         rx.box(
             rx.el.h4("Game"),
             rx.box(
                 rx.cond(State.over, "⚑", rx.cond(State.thinking, "⌛", "●")),
-                State.status,
+                rx.el.span(State.status),
                 class_name=rx.cond(State.over, "statusline over", "statusline"),
             ),
             class_name="panel",
         ),
-        rx.box(
-            rx.el.h4("New game"),
-            segment([("vs Computer", "ai"), ("Pass & play", "local")], State.mode, State.set_mode),
-            rx.cond(
-                State.mode == "ai",
-                rx.fragment(
-                    segment([("Play White", "white"), ("Play Black", "black")], State.side, State.set_side),
-                    rx.box(
-                        *[
-                            rx.el.button(
-                                name,
-                                class_name=rx.cond(State.level == lvl, "on", ""),
-                                on_click=State.set_level(lvl),
-                            )
-                            for lvl, name in LEVEL_NAMES.items()
-                        ],
-                        class_name="seg",
+        rx.cond(
+            State.room != "",
+            room_panel(),
+            rx.fragment(
+            rx.box(
+                rx.el.h4("New game"),
+                segment([("vs Computer", "ai"), ("Pass & play", "local")], State.mode, State.set_mode),
+                rx.cond(
+                    State.mode == "ai",
+                    rx.fragment(
+                        segment([("Play White", "white"), ("Play Black", "black")], State.side, State.set_side),
+                        rx.box(
+                            *[
+                                rx.el.button(
+                                    name,
+                                    class_name=rx.cond(State.level == lvl, "on", ""),
+                                    on_click=State.set_level(lvl),
+                                )
+                                for lvl, name in LEVEL_NAMES.items()
+                            ],
+                            class_name="seg",
+                        ),
                     ),
                 ),
+                rx.el.button("New game", class_name="btn btn-primary", on_click=State.new_game, style={"width": "100%"}),
+                class_name="panel",
             ),
-            rx.el.button("New game", class_name="btn btn-primary", on_click=State.new_game, style={"width": "100%"}),
-            class_name="panel",
+            online_panel(),
+            ),
         ),
         rx.box(
             rx.el.h4("Moves"),
@@ -285,7 +352,7 @@ def play() -> rx.Component:
         nav(),
         rx.box(
             rx.box(
-                player_bar(State.top_name, State.top_taken, State.top_lead, State.flipped, State.thinking & (State.mode == "ai") & (State.top_name != "You")),
+                player_bar(State.top_name, State.top_taken, State.top_lead, State.flipped, State.thinking & (State.top_name != "You")),
                 rx.box(
                     rx.box(
                         rx.box(
@@ -313,7 +380,6 @@ def play() -> rx.Component:
 
 
 app = rx.App(
-    theme=rx.theme(appearance="dark", accent_color="violet"),
     stylesheets=["/style.css"],
     head_components=[
         rx.el.meta(name="description", content="En Passant — play chess against a custom engine or a friend."),
@@ -322,3 +388,4 @@ app = rx.App(
 )
 app.add_page(index, route="/", title="En Passant — Play chess beautifully")
 app.add_page(play, route="/play", title="Play · En Passant", on_load=State.new_game)
+app.add_page(play, route="/game/[code]", title="Online game · En Passant", on_load=State.enter_room)
